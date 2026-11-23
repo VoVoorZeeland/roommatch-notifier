@@ -21,6 +21,24 @@ def save_seen(seen_ids: set) -> None:
         json.dump(sorted(list(seen_ids)), f, indent=2)
 
 
+def parse_card_info(text: str) -> tuple[str, str]:
+    lower_text = text.lower()
+
+    # Check "onzelfstandig" first since it contains "zelfstandig"
+    if "onzelfstandig" in lower_text or "deel je" in lower_text:
+        housing_type = "Shared (Onzelfstandig)"
+    elif "zelfstandig" in lower_text:
+        housing_type = "Zelfstandig"
+    else:
+        housing_type = "Unknown"
+
+    # Match "Online tot: di 24-11-2026 om 00:00"
+    deadline_match = re.search(r"Online tot:\s*([^\n]+)", text, re.IGNORECASE)
+    closes_at = deadline_match.group(1).strip() if deadline_match else "Unknown"
+
+    return housing_type, closes_at
+
+
 def fetch_listings() -> list[dict]:
     listings = {}
 
@@ -32,7 +50,6 @@ def fetch_listings() -> list[dict]:
         page = context.new_page()
         page.goto(URL, wait_until="networkidle", timeout=60000)
 
-        # Wacht tot woningkaarten of links naar details in de DOM staan
         try:
             page.wait_for_selector("a[href*='details']", timeout=20000)
         except Exception:
@@ -40,7 +57,6 @@ def fetch_listings() -> list[dict]:
             browser.close()
             return []
 
-        # Kleine pauze zodat Angular/JS alle tekstvelden heeft gerenderd
         page.wait_for_timeout(3000)
 
         links = page.query_selector_all("a[href*='details']")
@@ -51,23 +67,32 @@ def fetch_listings() -> list[dict]:
 
             full_url = href if href.startswith("http") else f"https://www.roommatch.nl{href}"
 
-            # Haal een unieke ID uit de URL (of gebruik de volledige URL als fallback)
             match = re.search(r"(\d{4,})", full_url)
             listing_id = match.group(1) if match else full_url
 
             if listing_id in listings:
                 continue
 
-            # Haal leesbare tekst uit de kaart (adres, prijs, plaats)
-            raw_text = link.inner_text().strip()
-            lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+            # Grab text from the closest card container (fallback to the link itself)
+            card_text = link.evaluate(
+                """el => {
+                    const card = el.closest('article, .woning-item, .list-item, li') || el;
+                    return card.innerText;
+                }"""
+            ).strip()
+
+            lines = [line.strip() for line in card_text.splitlines() if line.strip()]
             title = lines[0] if lines else "Nieuwe studentenwoning"
             details = " | ".join(lines[1:4]) if len(lines) > 1 else "Klik op de link voor details."
+
+            housing_type, closes_at = parse_card_info(card_text)
 
             listings[listing_id] = {
                 "id": listing_id,
                 "title": title,
                 "details": details,
+                "housing_type": housing_type,
+                "closes_at": closes_at,
                 "url": full_url,
             }
 
@@ -87,6 +112,10 @@ def send_discord_notification(listing: dict) -> None:
                 "url": listing["url"],
                 "description": listing["details"],
                 "color": 3447003,
+                "fields": [
+                    {"name": "Type", "value": listing["housing_type"], "inline": True},
+                    {"name": "Sign-up closes", "value": listing["closes_at"], "inline": True},
+                ],
                 "footer": {"text": "Roommatch.nl • Regio Haaglanden / Leiden"},
             }
         ]
@@ -115,7 +144,7 @@ def main():
         return
 
     for item in new_listings:
-        print(f"Nieuwe woning gevonden: {item['title']} ({item['url']})")
+        print(f"Nieuwe woning gevonden: {item['title']} | {item['housing_type']} | Sluit: {item['closes_at']}")
         send_discord_notification(item)
         seen.add(item["id"])
 
