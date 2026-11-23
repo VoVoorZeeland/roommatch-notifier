@@ -1,0 +1,39 @@
+name: Roommatch Listing Checker
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: # Hiermee kun je de bot ook handmatig testen
+
+permissions:
+  contents: write
+
+jobs:
+  check-listings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: Run Roommatch scraper
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python scraper.py
+
+      - name: Commit updated seen_listings.json
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add seen_listings.json
+          git diff --staged --quiet || (git commit -m "Update seen listings" && git push)
